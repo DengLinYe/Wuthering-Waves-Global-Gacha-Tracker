@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>鸣潮抽卡分析可视化</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f5f7;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: #fff;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        }
+
+        .global-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .stat-item {
+            background: #fafafa;
+            padding: 15px;
+            border-radius: 6px;
+            border: 1px solid #eee;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #1890ff;
+            margin-top: 10px;
+        }
+
+        .pie-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .pie-box {
+            flex: 1;
+            min-width: 300px;
+            height: 350px;
+        }
+
+        .tabs {
+            display: flex;
+            border-bottom: 2px solid #eee;
+            margin-bottom: 20px;
+            overflow-x: auto;
+            scrollbar-width: none;
+        }
+
+        .tabs::-webkit-scrollbar {
+            display: none;
+        }
+
+        .tab-btn {
+            padding: 12px 24px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 16px;
+            color: #666;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            white-space: nowrap;
+            transition: all 0.3s;
+        }
+
+        .tab-btn:hover {
+            color: #1890ff;
+        }
+
+        .tab-btn.active {
+            color: #1890ff;
+            border-bottom-color: #1890ff;
+            font-weight: bold;
+        }
+
+        .tab-pane {
+            display: none;
+        }
+
+        .tab-pane.active {
+            display: block;
+        }
+
+        .chart-container {
+            width: 100%;
+            margin-top: 20px;
+        }
+
+        .pool-stats {
+            display: flex;
+            gap: 20px;
+            color: #666;
+            margin-bottom: 10px;
+            padding: 15px;
+            background: #fafafa;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <h1>鸣潮抽卡分析报告</h1>
+    </div>
+
+    <div id="globalContainer" style="display: none;">
+        <div class="card">
+            <h2>全局统计概览</h2>
+            <div class="global-stats" id="globalStatsGrid"></div>
+            <div class="pie-container">
+                <div id="pieChart5" class="pie-box"></div>
+                <div id="pieChart4" class="pie-box"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="poolsWrapper" style="display: none;">
+        <div class="card">
+            <div class="tabs" id="tabsContainer"></div>
+            <div id="tabContentContainer"></div>
+        </div>
+    </div>
+
+    <script>
+        let poolChartsMap = {};
+        let pieCharts = [];
+
+        window.onload = function () {
+            fetch('/api/data')
+                .then(response => response.json())
+                .then(data => renderDashboard(data))
+                .catch(error => console.error('获取数据失败:', error));
+        };
+
+        function renderDashboard(data) {
+            document.getElementById('globalContainer').style.display = 'block';
+
+            const statsGrid = document.getElementById('globalStatsGrid');
+            statsGrid.innerHTML = `
+                <div class="stat-item">
+                    <div>全池总抽数</div>
+                    <div class="stat-value">${data.globalStats.totalPulls}</div>
+                </div>
+                <div class="stat-item">
+                    <div>五星平均出金</div>
+                    <div class="stat-value">${data.globalStats.avg5StarPulls ? data.globalStats.avg5StarPulls.toFixed(2) : '0'}</div>
+                </div>
+                <div class="stat-item">
+                    <div>四星平均出紫</div>
+                    <div class="stat-value">${data.globalStats.avg4StarPulls ? data.globalStats.avg4StarPulls.toFixed(2) : '0'}</div>
+                </div>
+            `;
+
+            renderPieCharts(data.globalStats.items5Star, data.globalStats.items4Star);
+
+            document.getElementById('poolsWrapper').style.display = 'block';
+            const tabsContainer = document.getElementById('tabsContainer');
+            const contentContainer = document.getElementById('tabContentContainer');
+
+            tabsContainer.innerHTML = '';
+            contentContainer.innerHTML = '';
+            poolChartsMap = {};
+
+            let firstTabKey = null;
+
+            for (const key in data.pools) {
+                const pool = data.pools[key];
+                if (pool.totalPulls === 0) continue;
+                if (!firstTabKey) firstTabKey = key;
+
+                const btn = document.createElement('button');
+                btn.className = `tab-btn`;
+                btn.dataset.key = key;
+                btn.innerText = pool.poolName;
+                btn.onclick = () => switchTab(key);
+                tabsContainer.appendChild(btn);
+
+                const pane = document.createElement('div');
+                pane.id = `pane_${key}`;
+                pane.className = `tab-pane`;
+
+                let avg5 = pool.avg5StarPulls ? pool.avg5StarPulls.toFixed(2) : '暂无';
+
+                pane.innerHTML = `
+                    <div class="pool-stats">
+                        <span>总花费: <strong>${pool.totalPulls}</strong> 抽</span>
+                        <span>五星平均: <strong>${avg5}</strong> 抽</span>
+                    </div>
+                    <div id="chart_${key}" class="chart-container"></div>
+                `;
+                contentContainer.appendChild(pane);
+
+                const historyData = pool.history5Star ? [...pool.history5Star] : [];
+                if (historyData.length > 0 || pool.currentPity > 0) {
+                    poolChartsMap[key] = renderBarChart(`chart_${key}`, historyData, pool.currentPity);
+                }
+            }
+
+            if (firstTabKey) {
+                switchTab(firstTabKey);
+            }
+        }
+
+        function renderPieCharts(items5, items4) {
+            const pie5Data = Object.keys(items5 || {}).map(name => ({ name: name, value: items5[name] }));
+            const pie4Data = Object.keys(items4 || {}).map(name => ({ name: name, value: items4[name] }));
+
+            if (pie5Data.length > 0) {
+                const chart5 = echarts.init(document.getElementById('pieChart5'));
+                chart5.setOption({
+                    title: { text: '五星物品获取比例', left: 'center' },
+                    tooltip: { trigger: 'item', formatter: '{b}: {c}个 ({d}%)' },
+                    legend: { orient: 'horizontal', bottom: 'bottom' },
+                    series: [{ type: 'pie', radius: '50%', data: pie5Data, emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0, 0, 0, 0.5)' } } }]
+                });
+                pieCharts.push(chart5);
+            }
+
+            if (pie4Data.length > 0) {
+                const chart4 = echarts.init(document.getElementById('pieChart4'));
+                chart4.setOption({
+                    title: { text: '四星物品获取比例', left: 'center' },
+                    tooltip: { trigger: 'item', formatter: '{b}: {c}个 ({d}%)' },
+                    series: [{ type: 'pie', radius: ['40%', '70%'], itemStyle: { borderRadius: 5, borderColor: '#fff', borderWidth: 2 }, data: pie4Data }]
+                });
+                pieCharts.push(chart4);
+            }
+        }
+
+        function switchTab(key) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('active'));
+
+            const targetBtn = document.querySelector(`.tab-btn[data-key="${key}"]`);
+            const targetPane = document.getElementById(`pane_${key}`);
+
+            if (targetBtn) targetBtn.classList.add('active');
+            if (targetPane) targetPane.classList.add('active');
+
+            if (poolChartsMap[key]) {
+                setTimeout(() => {
+                    poolChartsMap[key].resize();
+                }, 50);
+            }
+        }
+
+        function renderBarChart(containerId, history, currentPity) {
+            let chartData = [...history];
+            if (currentPity > 0) {
+                chartData.push({ name: "已垫水位", time: "当前未出金", pulls: currentPity, isPity: true });
+            }
+
+            const reversedHistory = chartData.reverse();
+            const dynamicHeight = Math.max(300, reversedHistory.length * 55);
+            document.getElementById(containerId).style.height = dynamicHeight + 'px';
+
+            const myChart = echarts.init(document.getElementById(containerId));
+            const yAxisData = reversedHistory.map(item => item.isPity ? `已垫水位\n(未出金)` : `${item.name}\n${item.time.split(' ')[0]}`);
+
+            const seriesData = reversedHistory.map(item => {
+                let color = '#ff4d4f';
+                if (item.isPity) color = '#d9d9d9';
+                else if (item.pulls <= 40) color = '#52c41a';
+                else if (item.pulls <= 65) color = '#faad14';
+
+                return { value: item.pulls, itemStyle: { color: color } };
+            });
+
+            const option = {
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: { type: 'shadow' },
+                    formatter: function (params) {
+                        const originalData = reversedHistory[params[0].dataIndex];
+                        if (originalData.isPity) return `当前已垫水位<br/><strong>${originalData.pulls}</strong> 抽 (未出五星)`;
+                        return `${originalData.name} (${originalData.time})<br/>出金抽数: <strong>${originalData.pulls}</strong> 抽`;
+                    }
+                },
+                grid: { left: '3%', right: '8%', bottom: '3%', top: '3%', containLabel: true },
+                xAxis: { type: 'value', max: 80, splitLine: { lineStyle: { type: 'dashed' } } },
+                yAxis: { type: 'category', data: yAxisData, axisLabel: { interval: 0 } },
+                series: [{ type: 'bar', data: seriesData, label: { show: true, position: 'right', formatter: '{c} 抽', fontWeight: 'bold', color: '#333' }, barMaxWidth: 30 }]
+            };
+
+            myChart.setOption(option);
+            return myChart;
+        }
+
+        window.addEventListener('resize', () => {
+            pieCharts.forEach(chart => chart.resize());
+            const activePane = document.querySelector('.tab-pane.active');
+            if (activePane) {
+                const chartId = activePane.querySelector('.chart-container').id;
+                const key = chartId.replace('chart_', '');
+                if (poolChartsMap[key]) poolChartsMap[key].resize();
+            }
+        });
+    </script>
+</body>
+
+</html>
